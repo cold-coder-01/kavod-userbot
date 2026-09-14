@@ -6,7 +6,7 @@ from google import genai
 from telethon import TelegramClient, events
 
 # Credentials from my.telegram.org
-API_ID = 37292292   # Replace with your numeric api_id
+API_ID = 37292292
 API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Replace with your api_hash string
 
 GEMINI_API_KEY = "AQ.Ab8RN6JwVwUGPnHOtO8hUU-zpAQe0jtt_aGN2fqbWnrjCH-Ftg"  # Replace with your Gemini API key
