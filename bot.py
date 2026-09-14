@@ -46,6 +46,11 @@ EXPECTED_ACCOUNT_ID = int(
 GEMINI_MODEL = "gemini-3.6-flash"
 MAX_HISTORY_TURNS = 6
 
+ADMIN_USERNAMES = {
+    "doves00",
+    "kavodbook1",
+}
+
 GREETING_WORDS = {
     "selam",
     "salam",
@@ -62,15 +67,23 @@ def is_greeting(text: str) -> bool:
     return text.strip().lower() in GREETING_WORDS
 
 
+async def is_admin_event(event) -> bool:
+    if event.sender_id == ADMIN_USER_ID:
+        return True
+
+    sender = await event.get_sender()
+    username = (
+        getattr(sender, "username", "") or ""
+    ).lower()
+
+    return username in ADMIN_USERNAMES
+
+
 daily_inventory = (
     "ለዛሬ ሁሉም መጻሕፍት እና የቆዳ ዕቃዎች አሉ።"
 )
 
-# Short in-memory conversation context per Telegram user.
-# Render Free can restart, so this context is intentionally temporary.
 conversation_history = defaultdict(list)
-
-# Limit simultaneous Gemini requests.
 gemini_semaphore = asyncio.Semaphore(3)
 
 
@@ -285,12 +298,11 @@ Do not invent missing business information.
 
 @telegram.on(
     events.NewMessage(
-        incoming=True,
         pattern=r"^/inventory$",
     )
 )
 async def inventory_status_handler(event):
-    if event.sender_id != ADMIN_USER_ID:
+    if not await is_admin_event(event):
         return
 
     await event.reply(
@@ -305,14 +317,13 @@ async def inventory_status_handler(event):
 
 @telegram.on(
     events.NewMessage(
-        incoming=True,
         pattern=r"^/set_inventory(?:\s+([\s\S]+))?$",
     )
 )
 async def set_inventory_handler(event):
     global daily_inventory
 
-    if event.sender_id != ADMIN_USER_ID:
+    if not await is_admin_event(event):
         return
 
     new_inventory = event.pattern_match.group(1)
@@ -337,9 +348,14 @@ async def set_inventory_handler(event):
 
     daily_inventory = new_inventory
 
+    sender = await event.get_sender()
+    admin_username = (
+        getattr(sender, "username", "") or str(event.sender_id)
+    )
+
     logger.info(
         "Inventory updated by admin: %s",
-        ADMIN_USER_ID,
+        admin_username,
     )
 
     await event.reply(
@@ -354,12 +370,11 @@ async def set_inventory_handler(event):
 
 @telegram.on(
     events.NewMessage(
-        incoming=True,
         pattern=r"^/clear_context$",
     )
 )
 async def clear_context_handler(event):
-    if event.sender_id != ADMIN_USER_ID:
+    if not await is_admin_event(event):
         return
 
     conversation_history.clear()
