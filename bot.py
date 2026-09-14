@@ -11,55 +11,27 @@ from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-
 logger = logging.getLogger("kavod")
-
-
-# ============================================================
-# ENVIRONMENT VARIABLES
-# ============================================================
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
-
-EXPECTED_ACCOUNT_ID = int(
-    os.environ.get("EXPECTED_ACCOUNT_ID", "0")
-)
-
-
-# ============================================================
-# CONFIG
-# ============================================================
+EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
 GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_TIMEOUT_SECONDS = 20
 MAX_HISTORY_TURNS = 6
 
-ADMIN_USERNAMES = {
-    "doves00",
-    "kavodbook1",
-}
-
+ADMIN_USERNAMES = {"doves00", "kavodbook1"}
 GREETING_WORDS = {
-    "selam",
-    "salam",
-    "hello",
-    "hi",
-    "hey",
-    "ሰላም",
-    "ሰላም!",
-    "selam!",
+    "selam", "salam", "hello", "hi", "hey",
+    "ሰላም", "ሰላም!", "selam!",
 }
 
 
@@ -70,51 +42,24 @@ def is_greeting(text: str) -> bool:
 async def is_admin_event(event) -> bool:
     if event.sender_id == ADMIN_USER_ID:
         return True
-
     sender = await event.get_sender()
-    username = (
-        getattr(sender, "username", "") or ""
-    ).lower()
-
+    username = (getattr(sender, "username", "") or "").lower()
     return username in ADMIN_USERNAMES
 
 
-daily_inventory = (
-    "ለዛሬ ሁሉም መጻሕፍት እና የቆዳ ዕቃዎች አሉ።"
-)
-
+daily_inventory = "ለዛሬ ሁሉም መጻሕፍት እና የቆዳ ዕቃዎች አሉ።"
 conversation_history = defaultdict(list)
 gemini_semaphore = asyncio.Semaphore(3)
 
+telegram = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ============================================================
-# CLIENTS
-# ============================================================
-
-telegram = TelegramClient(
-    StringSession(SESSION_STRING),
-    API_ID,
-    API_HASH,
-)
-
-ai_client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
-
-
-# ============================================================
-# RENDER HEALTH SERVER
-# ============================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         if self.path in ("/", "/health"):
             self.send_response(200)
-            self.send_header(
-                "Content-Type",
-                "text/plain; charset=utf-8",
-            )
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(
                 "KAVOD Telegram Customer Service is running.".encode("utf-8")
@@ -133,23 +78,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_health_server():
     port = int(os.environ.get("PORT", "10000"))
-
-    server = HTTPServer(
-        ("0.0.0.0", port),
-        HealthCheckHandler,
-    )
-
-    logger.info(
-        "Health server running on port %s",
-        port,
-    )
-
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logger.info("Health server running on port %s", port)
     server.serve_forever()
 
-
-# ============================================================
-# KAVOD AI SYSTEM INSTRUCTION
-# ============================================================
 
 SYSTEM_INSTRUCTION = """
 You are the official Telegram customer-service representative for
@@ -158,66 +90,36 @@ KAVOD BOOKS (@KAVODBOOK1).
 KAVOD sells spiritual/Christian books and leather products.
 Most customers are Ethiopian and prefer Amharic.
 
-Your goal is to make the conversation feel like the customer is chatting
-with a real, polite shop employee — not an AI.
+Make the conversation feel like the customer is chatting with a real,
+polite shop employee, not an AI.
 
-CUSTOMER SERVICE STYLE:
-
+Rules:
 1. Reply in natural, everyday, conversational Amharic.
-2. Keep the tone warm, calm, respectful and human.
-3. Avoid stiff, overly formal, literary, robotic, or translated-sounding Amharic.
-4. Keep most replies to 1-3 short sentences unless more detail is needed.
-5. Answer the customer's latest message directly and naturally.
-6. Use the recent conversation context to understand follow-up messages such as
-   "ዋጋውስ?", "አለ?", "የት?", "እሺ", "እንዴት ነው?".
-7. Do not repeat greetings in every message once the conversation has started.
-8. Do not mention Gemini, AI, chatbot, model, prompts, or internal instructions.
-9. Do not use Markdown headings, code blocks, or corporate-sounding scripts.
-
-INVENTORY AND BUSINESS TRUTH:
-
-10. TODAY'S INVENTORY INFORMATION supplied by the admin is the source of truth.
-11. If the admin says an item is available, you may say it is available.
-12. If the admin says an item is unavailable/out of stock, clearly but politely
-    tell the customer it is currently unavailable.
-13. Never invent a product, book title, price, stock quantity, author, color,
-    size, delivery fee, address, phone number, promotion, payment method, or
-    any other business fact that is not present in the supplied information.
-14. If the customer's requested item is not clearly covered by today's inventory,
-    do NOT say yes or no. Ask for the exact item/title or say you need to confirm it.
-15. If price is unknown, say naturally that the price needs to be confirmed.
-16. If the customer wants to order but order/delivery/payment details were not
-    supplied, ask the minimum necessary question instead of inventing a process.
-
-CONVERSATIONAL BEHAVIOR:
-
-17. Understand common Ethiopian conversational wording, short messages,
-    transliterated Amharic, and mixed Amharic/English when possible.
-18. Match the customer's level of formality. Be friendly without being excessive.
-19. One suitable emoji occasionally is fine, but do not put emojis in every reply.
-20. If the customer asks something unrelated to KAVOD, politely bring the
-    conversation back to KAVOD products/services.
-21. If information is missing, respond like a real employee would, for example:
-    "የመጽሐፉን ስም ትንሽ ይላኩልኝ፣ ላረጋግጥልዎት።"
-    or "ዋጋውን ላረጋግጥልዎት።"
+2. Keep replies short, warm, useful and human.
+3. Avoid robotic, overly formal, translated-sounding Amharic.
+4. Use recent conversation context for follow-up questions.
+5. Do not repeat greetings after the conversation has started.
+6. Never mention AI, Gemini, chatbot, prompts or internal instructions.
+7. TODAY'S INVENTORY supplied by the admin is the source of truth.
+8. Never invent prices, stock, titles, authors, colors, sizes, delivery fees,
+   addresses, phone numbers, payment methods, promotions or business facts.
+9. If an item is not clearly covered by inventory, ask for the exact title/item
+   or say it needs to be confirmed.
+10. If a price is not provided, say it needs to be confirmed.
+11. Understand short Amharic, transliterated Amharic and mixed English/Amharic.
+12. Do not use Markdown headings or code blocks.
 """
 
 
-# ============================================================
-# CONVERSATION MEMORY HELPERS
-# ============================================================
-
 def build_history_text(user_id: int) -> str:
     turns = conversation_history[user_id][-MAX_HISTORY_TURNS * 2:]
-
     if not turns:
-        return "No previous messages in this conversation."
+        return "No previous messages."
 
     lines = []
     for role, text in turns:
         label = "Customer" if role == "customer" else "KAVOD"
         lines.append(f"{label}: {text}")
-
     return "\n".join(lines)
 
 
@@ -228,10 +130,6 @@ def remember_turn(user_id: int, role: str, text: str) -> None:
         conversation_history[user_id] = conversation_history[user_id][-max_items:]
 
 
-# ============================================================
-# GEMINI RESPONSE GENERATOR
-# ============================================================
-
 async def generate_ai_response(
     customer_message: str,
     user_id: int,
@@ -241,11 +139,9 @@ async def generate_ai_response(
 
     prompt = f"""
 TODAY'S KAVOD INVENTORY / AVAILABILITY INFORMATION:
-
 {daily_inventory}
 
-RECENT CONVERSATION WITH THIS CUSTOMER:
-
+RECENT CONVERSATION:
 {history_text}
 
 CUSTOMER NAME:
@@ -254,14 +150,20 @@ CUSTOMER NAME:
 CUSTOMER'S NEW MESSAGE:
 {customer_message}
 
-Respond as KAVOD customer service in natural conversational Amharic.
-Use the inventory information as the only source of truth for availability.
+Reply directly as KAVOD customer service in natural conversational Amharic.
+Use today's inventory as the only source of truth for availability.
 Do not invent missing business information.
 """
 
+    logger.info(
+        "GEMINI START | user_id=%s | text=%r",
+        user_id,
+        customer_message,
+    )
+
     async with gemini_semaphore:
         try:
-            response = await ai_client.aio.models.generate_content(
+            request = ai_client.aio.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -271,18 +173,33 @@ Do not invent missing business information.
                 ),
             )
 
+            response = await asyncio.wait_for(
+                request,
+                timeout=GEMINI_TIMEOUT_SECONDS,
+            )
+
             if response and response.text:
                 answer = response.text.strip()
                 if answer:
+                    logger.info(
+                        "GEMINI SUCCESS | user_id=%s | reply=%r",
+                        user_id,
+                        answer,
+                    )
                     return answer
 
-            logger.warning(
-                "Gemini returned an empty response."
-            )
+            logger.warning("GEMINI EMPTY | user_id=%s", user_id)
 
+        except asyncio.TimeoutError:
+            logger.error(
+                "GEMINI TIMEOUT | user_id=%s | timeout=%ss",
+                user_id,
+                GEMINI_TIMEOUT_SECONDS,
+            )
         except Exception as error:
             logger.exception(
-                "Gemini API error: %s",
+                "GEMINI ERROR | user_id=%s | error=%s",
+                user_id,
                 error,
             )
 
@@ -292,98 +209,69 @@ Do not invent missing business information.
     )
 
 
-# ============================================================
-# ADMIN COMMAND - CHECK INVENTORY
-# ============================================================
-
-@telegram.on(
-    events.NewMessage(
-        pattern=r"^/inventory$",
-    )
-)
+@telegram.on(events.NewMessage(pattern=r"^/inventory$"))
 async def inventory_status_handler(event):
+    logger.info(
+        "ADMIN COMMAND | sender_id=%s | command=/inventory",
+        event.sender_id,
+    )
     if not await is_admin_event(event):
+        logger.warning("ADMIN DENIED | sender_id=%s", event.sender_id)
         return
 
-    await event.reply(
-        "የዛሬው የዕቃ መረጃ፦\n\n"
-        f"{daily_inventory}"
-    )
+    await event.reply("የዛሬው የዕቃ መረጃ፦\n\n" + daily_inventory)
 
-
-# ============================================================
-# ADMIN COMMAND - SET INVENTORY
-# ============================================================
 
 @telegram.on(
-    events.NewMessage(
-        pattern=r"^/set_inventory(?:\s+([\s\S]+))?$",
-    )
+    events.NewMessage(pattern=r"^/set_inventory(?:\s+([\s\S]+))?$")
 )
 async def set_inventory_handler(event):
     global daily_inventory
 
+    logger.info(
+        "ADMIN COMMAND | sender_id=%s | command=/set_inventory",
+        event.sender_id,
+    )
+
     if not await is_admin_event(event):
+        logger.warning("ADMIN DENIED | sender_id=%s", event.sender_id)
         return
 
     new_inventory = event.pattern_match.group(1)
-
     if not new_inventory:
         await event.reply(
-            "ከ /set_inventory በኋላ የዛሬውን የዕቃ ሁኔታ ይጻፉ።\n\n"
-            "ለምሳሌ፦\n"
-            "/set_inventory የጸሎት መጽሐፍ አለ፣ ዋጋ 350 ብር። "
-            "ጥቁር የቆዳ ቦርሳ አልቋል። "
-            "ቡናማ የቆዳ ቦርሳ አለ፣ ዋጋ 1200 ብር።"
+            "ከ /set_inventory በኋላ የዛሬውን የዕቃ ሁኔታ ይጻፉ።"
         )
         return
 
     new_inventory = new_inventory.strip()
-
     if len(new_inventory) > 4000:
-        await event.reply(
-            "የዕቃ መረጃው በጣም ረጅም ነው።"
-        )
+        await event.reply("የዕቃ መረጃው በጣም ረጅም ነው።")
         return
 
     daily_inventory = new_inventory
+    conversation_history.clear()
 
     sender = await event.get_sender()
-    admin_username = (
-        getattr(sender, "username", "") or str(event.sender_id)
-    )
-
+    admin_username = getattr(sender, "username", None) or str(event.sender_id)
     logger.info(
-        "Inventory updated by admin: %s",
+        "INVENTORY UPDATED | admin=%s | inventory=%r",
         admin_username,
+        daily_inventory,
     )
 
     await event.reply(
-        "✅ የዛሬው የዕቃ መረጃ ተቀይሯል።\n\n"
-        f"{daily_inventory}"
+        "✅ የዛሬው የዕቃ መረጃ ተቀይሯል።\n\n" + daily_inventory
     )
 
 
-# ============================================================
-# ADMIN COMMAND - CLEAR CUSTOMER CONTEXTS
-# ============================================================
-
-@telegram.on(
-    events.NewMessage(
-        pattern=r"^/clear_context$",
-    )
-)
+@telegram.on(events.NewMessage(pattern=r"^/clear_context$"))
 async def clear_context_handler(event):
     if not await is_admin_event(event):
         return
-
     conversation_history.clear()
     await event.reply("✅ የደንበኞች የውይይት context ተጽድቷል።")
 
-
-# ============================================================
-# CUSTOMER MESSAGE LISTENER
-# ============================================================
 
 @telegram.on(
     events.NewMessage(
@@ -393,213 +281,130 @@ async def clear_context_handler(event):
 )
 async def customer_message_handler(event):
     try:
-        customer_text = (
-            event.raw_text or ""
-        ).strip()
+        customer_text = (event.raw_text or "").strip()
 
         if customer_text.startswith("/"):
             return
 
         sender = await event.get_sender()
-
         if sender is None:
-            logger.warning(
-                "Could not get sender information."
-            )
+            logger.warning("CUSTOMER EVENT WITHOUT SENDER")
             return
 
         if getattr(sender, "bot", False):
-            logger.info(
-                "Ignoring Telegram bot: %s",
-                event.sender_id,
-            )
             return
 
         me = await telegram.get_me()
-
         if event.sender_id == me.id:
             return
 
         if not customer_text:
-            logger.info(
-                "Non-text message received from %s",
-                event.sender_id,
-            )
-
             await event.reply(
                 "እባክዎን የሚፈልጉትን በጽሑፍ ይላኩልኝ። 🙏"
             )
             return
 
-        first_name = getattr(
-            sender,
-            "first_name",
-            None,
-        ) or "ደንበኛ"
-
-        username = getattr(
-            sender,
-            "username",
-            None,
-        ) or "NoUsername"
+        first_name = getattr(sender, "first_name", None) or "ደንበኛ"
+        username = getattr(sender, "username", None) or "NoUsername"
 
         logger.info(
-            "MESSAGE | sender_id=%s | name=%s | username=%s | text=%r",
+            "MESSAGE RECEIVED | sender_id=%s | name=%s | username=%s | text=%r",
             event.sender_id,
             first_name,
             username,
             customer_text,
         )
 
-        remember_turn(
-            event.sender_id,
-            "customer",
-            customer_text,
-        )
+        is_first_message = len(conversation_history[event.sender_id]) == 0
+        remember_turn(event.sender_id, "customer", customer_text)
 
-        async with telegram.action(
-            event.chat_id,
-            "typing",
-        ):
-            if is_greeting(customer_text) and len(conversation_history[event.sender_id]) <= 1:
+        async with telegram.action(event.chat_id, "typing"):
+            if is_greeting(customer_text) and is_first_message:
                 reply_text = (
                     "ሰላም፣ እንኳን ወደ KAVOD በደህና መጡ 😊 "
                     "ምን እንርዳዎት?"
                 )
+                logger.info(
+                    "FIXED GREETING | user_id=%s",
+                    event.sender_id,
+                )
             else:
                 reply_text = await generate_ai_response(
-                    customer_text=customer_text,
+                    customer_message=customer_text,
                     user_id=event.sender_id,
                     first_name=first_name,
                 )
 
-        remember_turn(
-            event.sender_id,
-            "kavod",
-            reply_text,
-        )
+        remember_turn(event.sender_id, "kavod", reply_text)
 
-        await event.reply(
-            reply_text,
-            link_preview=False,
-        )
-
+        await event.reply(reply_text, link_preview=False)
         logger.info(
-            "REPLY | sender_id=%s | text=%r",
+            "REPLY SENT | sender_id=%s | text=%r",
             event.sender_id,
             reply_text,
         )
 
     except FloodWaitError as error:
-        logger.warning(
-            "Telegram FloodWait: %s seconds",
-            error.seconds,
-        )
-        await asyncio.sleep(
-            error.seconds
-        )
-
+        logger.warning("Telegram FloodWait: %s seconds", error.seconds)
+        await asyncio.sleep(error.seconds)
     except Exception as error:
         logger.exception(
-            "Customer message handler failed: %s",
+            "CUSTOMER HANDLER ERROR | sender_id=%s | error=%s",
+            event.sender_id,
             error,
         )
+        try:
+            await event.reply(
+                "ይቅርታ፣ ትንሽ የቴክኒክ ችግር አጋጥሞናል። "
+                "እባክዎን እንደገና ይላኩልኝ።"
+            )
+        except Exception:
+            pass
 
-
-# ============================================================
-# TELEGRAM STARTUP
-# ============================================================
 
 async def start_telegram():
-    logger.info(
-        "Connecting to Telegram..."
-    )
-
+    logger.info("Connecting to Telegram...")
     await telegram.connect()
 
     if not await telegram.is_user_authorized():
         raise RuntimeError(
-            "SESSION_STRING is invalid or no longer authorized. "
-            "Generate a valid Telegram StringSession and add it "
-            "to Render environment variables."
+            "SESSION_STRING is invalid or no longer authorized."
         )
 
     me = await telegram.get_me()
-
-    logger.info("")
     logger.info("=" * 60)
     logger.info("TELEGRAM ACCOUNT CONNECTED")
-    logger.info("=" * 60)
-    logger.info(
-        "Account ID : %s",
-        me.id,
-    )
+    logger.info("Account ID : %s", me.id)
     logger.info(
         "Name       : %s %s",
         me.first_name or "",
         me.last_name or "",
     )
-    logger.info(
-        "Username   : @%s",
-        me.username or "NONE",
-    )
+    logger.info("Username   : @%s", me.username or "NONE")
     logger.info("=" * 60)
 
     if EXPECTED_ACCOUNT_ID and me.id != EXPECTED_ACCOUNT_ID:
-        logger.critical(
-            "WRONG TELEGRAM ACCOUNT SESSION!"
-        )
-        logger.critical(
-            "Expected account ID: %s",
-            EXPECTED_ACCOUNT_ID,
-        )
-        logger.critical(
-            "Session account ID: %s",
-            me.id,
-        )
-
         await telegram.disconnect()
-
         raise RuntimeError(
             "SESSION_STRING belongs to the wrong Telegram account."
         )
 
     handlers = telegram.list_event_handlers()
-
-    logger.info(
-        "Registered event handlers: %s",
-        len(handlers),
-    )
-
+    logger.info("Registered event handlers: %s", len(handlers))
     for callback, event_builder in handlers:
-        logger.info(
-            "Handler loaded: %s",
-            callback.__name__,
-        )
+        logger.info("Handler loaded: %s", callback.__name__)
 
-    logger.info(
-        "Gemini model: %s",
-        GEMINI_MODEL,
-    )
-
-    logger.info(
-        "KAVOD CUSTOMER SERVICE IS ONLINE ✅"
-    )
+    logger.info("Gemini model: %s", GEMINI_MODEL)
+    logger.info("Gemini timeout: %ss", GEMINI_TIMEOUT_SECONDS)
+    logger.info("KAVOD CUSTOMER SERVICE IS ONLINE ✅")
 
     try:
         await telegram.catch_up()
     except Exception as error:
-        logger.warning(
-            "catch_up failed: %s",
-            error,
-        )
+        logger.warning("catch_up failed: %s", error)
 
     await telegram.run_until_disconnected()
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 async def main():
     await start_telegram()
@@ -610,20 +415,12 @@ if __name__ == "__main__":
         target=run_health_server,
         daemon=True,
     )
-
     health_thread.start()
 
     try:
         asyncio.run(main())
-
     except KeyboardInterrupt:
-        logger.info(
-            "KAVOD assistant stopped manually."
-        )
-
+        logger.info("KAVOD assistant stopped manually.")
     except Exception as error:
-        logger.exception(
-            "Application crashed: %s",
-            error,
-        )
+        logger.exception("Application crashed: %s", error)
         raise
