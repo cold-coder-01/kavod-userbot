@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import os
 import re
@@ -25,10 +26,13 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-14.3"
+BOT_VERSION = "2026-09-14.4"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 20
 MAX_HISTORY_TURNS = 4
+
+INVENTORY_MARKER = "#KAVOD_INVENTORY"
+DESIGN_MARKER = "/add_design"
 
 KAVOD_ADDRESS = "መገናኛ ሙልጌታ ዘለቀ ህንጻ 1ኛ ፎቅ"
 KAVOD_DELIVERY = "በሞተረኛ እና በRide እንልካለን። የዴሊቨሪ ክፍያውን ተቀባዩ ይከፍላል።"
@@ -52,15 +56,20 @@ OUT_OF_STOCK_WORDS = {
 }
 
 ADDRESS_SIGNALS = {
-    "አድራሻ", "የት ናችሁ", "የት ነው", "የት ናችሁ?", "የት ነው?",
-    "location", "address", "shop location", "yet nachihu", "yet nachu",
-    "yet new", "yet naw", "adres", "addressachu", "locationachu",
+    "አድራሻ", "የት ናችሁ", "የት ነው", "location", "address",
+    "shop location", "yet nachihu", "yet nachu", "yet new", "yet naw",
+    "adres", "addressachu", "locationachu",
 }
 
 DELIVERY_SIGNALS = {
     "delivery", "ዴሊቨሪ", "ትልካላችሁ", "ትልኩልኝ", "ride", "ሞተረኛ", "መላክ",
     "delivery alachew", "delivery alachu", "tilkalachu", "tilkulign",
-    "be ride", "motor", "moteregna", "moteregna",
+    "be ride", "motor", "moteregna",
+}
+
+DESIGN_SIGNALS = {
+    "design", "photo", "picture", "image", "ፎቶ", "ዲዛይን", "ምስል",
+    "model", "style", "sample", "see it", "show me",
 }
 
 SUSPICIOUS_OUTPUT_MARKERS = (
@@ -77,7 +86,10 @@ def is_greeting(text: str) -> bool:
     cleaned = normalize(text).strip("!?.,።፣")
     if cleaned in GREETING_WORDS:
         return True
-    return any(cleaned.startswith(word + " ") for word in ("selam", "salam", "hello", "hi", "hey", "ሰላም"))
+    return any(
+        cleaned.startswith(word + " ")
+        for word in ("selam", "salam", "hello", "hi", "hey", "ሰላም")
+    )
 
 
 def asks_address(text: str) -> bool:
@@ -88,6 +100,22 @@ def asks_address(text: str) -> bool:
 def asks_delivery(text: str) -> bool:
     lowered = normalize(text)
     return any(signal in lowered for signal in DELIVERY_SIGNALS)
+
+
+def asks_design_photo(text: str) -> bool:
+    lowered = normalize(text)
+    return any(signal in lowered for signal in DESIGN_SIGNALS)
+
+
+def design_tag_from_text(text: str) -> str | None:
+    lowered = normalize(text)
+    if (
+        "leather bible" in lowered
+        or ("leather" in lowered and "bible" in lowered)
+        or ("የቆዳ" in lowered and any(word in lowered for word in ("መጽሐፍ", "መጽሐፍ ቅዱስ")))
+    ):
+        return "leather_bible"
+    return None
 
 
 async def is_admin_event(event) -> bool:
@@ -155,6 +183,79 @@ gemini_semaphore = asyncio.Semaphore(3)
 
 telegram = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+async def save_inventory_persistently() -> None:
+    await telegram.send_message(
+        "me",
+        f"{INVENTORY_MARKER}\n{daily_inventory}",
+    )
+    logger.info("INVENTORY PERSISTED TO SAVED MESSAGES")
+
+
+async def load_persisted_inventory() -> None:
+    global daily_inventory
+
+    try:
+        async for message in telegram.iter_messages(
+            "me",
+            search=INVENTORY_MARKER,
+            limit=20,
+        ):
+            text = (message.raw_text or "").strip()
+            if text.startswith(INVENTORY_MARKER):
+                saved_inventory = text[len(INVENTORY_MARKER):].strip()
+                if saved_inventory:
+                    daily_inventory = saved_inventory
+                    logger.info(
+                        "PERSISTED INVENTORY LOADED | inventory=%r",
+                        daily_inventory,
+                    )
+                    return
+
+        logger.info("NO PERSISTED INVENTORY FOUND")
+    except Exception as error:
+        logger.exception("FAILED TO LOAD PERSISTED INVENTORY | %s", error)
+
+
+async def send_saved_designs(event, tag: str) -> bool:
+    search_text = f"{DESIGN_MARKER} {tag}"
+    design_messages = []
+
+    async for message in telegram.iter_messages(
+        "me",
+        search=search_text,
+        limit=10,
+    ):
+        if message.media:
+            design_messages.append(message)
+
+    if not design_messages:
+        return False
+
+    await event.reply("እነዚህ አሁን ያሉን ዲዛይኖች ናቸው፦")
+
+    for index, message in enumerate(reversed(design_messages[:6]), start=1):
+        try:
+            data = await telegram.download_media(message.media, file=bytes)
+            if not data:
+                continue
+
+            mime_type = getattr(getattr(message, "document", None), "mime_type", "") or ""
+            extension = ".png" if "png" in mime_type else ".jpg"
+
+            buffer = io.BytesIO(data)
+            buffer.name = f"{tag}_{index}{extension}"
+
+            await telegram.send_file(
+                event.chat_id,
+                buffer,
+                caption=f"ዲዛይን {index}",
+            )
+        except Exception as error:
+            logger.exception("FAILED TO SEND DESIGN | tag=%s | %s", tag, error)
+
+    return True
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -298,10 +399,47 @@ async def set_inventory_handler(event):
     daily_inventory = new_inventory
     conversation_history.clear()
 
+    try:
+        await save_inventory_persistently()
+    except Exception as error:
+        logger.exception("INVENTORY PERSISTENCE FAILED | %s", error)
+        await event.reply(
+            "⚠️ የዕቃ መረጃው ተቀይሯል፣ ግን persistent copy ማስቀመጥ አልተቻለም።"
+        )
+
     logger.info("INVENTORY UPDATED | inventory=%r", daily_inventory)
     logger.info("AVAILABLE BOOK ENTRIES | %r", available_book_entries())
 
     await event.reply("✅ የዛሬው የዕቃ መረጃ ተቀይሯል።\n\n" + daily_inventory)
+
+
+@telegram.on(events.NewMessage(pattern=r"^/add_design(?:\s+([a-zA-Z0-9_-]+))?$"))
+async def add_design_handler(event):
+    if not await is_admin_event(event):
+        return
+
+    tag = event.pattern_match.group(1)
+    if not tag:
+        await event.reply(
+            "ፎቶውን attach አድርገው caption ላይ `/add_design leather_bible` ይጻፉ።"
+        )
+        return
+
+    if not event.message.media:
+        await event.reply(
+            "ይህ command ከPNG/JPG ፎቶ ጋር መላክ አለበት።"
+        )
+        return
+
+    tag = tag.lower()
+
+    try:
+        await event.forward_to("me")
+        logger.info("DESIGN SAVED | tag=%s | sender_id=%s", tag, event.sender_id)
+        await event.reply(f"✅ `{tag}` ዲዛይን ተቀምጧል።")
+    except Exception as error:
+        logger.exception("DESIGN SAVE FAILED | tag=%s | %s", tag, error)
+        await event.reply("ዲዛይኑን ማስቀመጥ አልተቻለም።")
 
 
 @telegram.on(events.NewMessage(pattern=r"^/clear_context$"))
@@ -348,15 +486,28 @@ async def customer_message_handler(event):
             if is_greeting(customer_text):
                 reply_text = "ሰላም፣ እንኳን ወደ KAVOD በደህና መጡ 😊 ምን እንርዳዎት?"
                 logger.info("FIXED GREETING | user_id=%s", event.sender_id)
+
+            elif asks_design_photo(customer_text) and design_tag_from_text(customer_text):
+                tag = design_tag_from_text(customer_text)
+                sent = await send_saved_designs(event, tag)
+                if sent:
+                    reply_text = "የሚመችዎትን ዲዛይን ይምረጡ።"
+                else:
+                    reply_text = "የዚህ ዕቃ ዲዛይን ፎቶ አሁን አልተጫነም።"
+                logger.info("DIRECT DESIGN | user_id=%s | tag=%s | sent=%s", event.sender_id, tag, sent)
+
             elif looks_like_general_book_question(customer_text):
                 reply_text = build_book_list_reply()
                 logger.info("DIRECT BOOK LIST | user_id=%s | books=%r", event.sender_id, available_book_entries())
+
             elif asks_address(customer_text):
                 reply_text = f"አድራሻችን {KAVOD_ADDRESS} ነው።"
                 logger.info("DIRECT ADDRESS | user_id=%s", event.sender_id)
+
             elif asks_delivery(customer_text):
                 reply_text = KAVOD_DELIVERY
                 logger.info("DIRECT DELIVERY | user_id=%s", event.sender_id)
+
             else:
                 reply_text = await generate_ai_response(
                     customer_message=customer_text,
@@ -387,6 +538,9 @@ async def start_telegram():
         raise RuntimeError("SESSION_STRING is invalid or no longer authorized.")
 
     me = await telegram.get_me()
+
+    await load_persisted_inventory()
+
     logger.info("=" * 60)
     logger.info("TELEGRAM ACCOUNT CONNECTED")
     logger.info("Account ID : %s", me.id)
