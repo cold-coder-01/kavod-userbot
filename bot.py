@@ -51,7 +51,7 @@ EXPECTED_ACCOUNT_ID = int(
 # CONFIG
 # ============================================================
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
 # This resets when Render restarts.
