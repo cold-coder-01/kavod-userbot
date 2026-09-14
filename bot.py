@@ -1,5 +1,5 @@
 import asyncio
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
 import threading
 from google import genai
@@ -7,10 +7,10 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 API_ID = 37292292
-API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Replace with your api_hash
-SESSION_STRING = "1BJWap1sBuyVzhHJbM203zrJgnSfn_Bm0K-t0rd9H-gR7b36O2GEw0b2cQrJ-1tNnznf0IpbwpRa-Uoju2YZ9agcDXC0awMBbDkZmC9r6lMPy9-7_MlANTHo_9kY10pgT0MUqUIlWW0UKScy2sdU83ret7cW8YTAcsX1civGfAez9_tTaXcoEus-sat8SdS180BVJ5oze1tOqYqqx2qAlQe139HBYfuJB9QQSZOtBUMzo_6NTzH1QA8_bYZAvtBaa4PSWsjQdtx14FYK1UyEsEF9JfBSMfOj7Jnuxxy_66HPYK6G7pk1qlbJV-QRA7DEL_k5JHbTHBgpW6GS0UL3xlZih31ntcp4="  # Paste string from Step 1
+API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Replace with your actual api_hash
+SESSION_STRING = "1BJWap1sBuyVzhHJbM203zrJgnSfn_Bm0K-t0rd9H-gR7b36O2GEw0b2cQrJ-1tNnznf0IpbwpRa-Uoju2YZ9agcDXC0awMBbDkZmC9r6lMPy9-7_MlANTHo_9kY10pgT0MUqUIlWW0UKScy2sdU83ret7cW8YTAcsX1civGfAez9_tTaXcoEus-sat8SdS180BVJ5oze1tOqYqqx2qAlQe139HBYfuJB9QQSZOtBUMzo_6NTzH1QA8_bYZAvtBaa4PSWsjQdtx14FYK1UyEsEF9JfBSMfOj7Jnuxxy_66HPYK6G7pk1qlbJV-QRA7DEL_k5JHbTHBgpW6GS0UL3xlZih31ntcp4="  # Replace with your string session
 
-GEMINI_API_KEY = "AQ.Ab8RN6JwVwUGPnHOtO8hUU-zpAQe0jtt_aGN2fqbWnrjCH-Ftg"
+GEMINI_API_KEY = "AQ.Ab8RN6JwVwUGPnHOtO8hUU-zpAQe0jtt_aGN2fqbWnrjCH-Ftg"  
 ADMIN_USER_ID = 6873889384
 
 daily_inventory = "ለዛሬ ሁሉም መጻሕፍት እና የቆዳ ዕቃዎች አሉ።"
@@ -68,6 +68,7 @@ async def handle_customer_message(event):
         return
 
     user_text = event.raw_text
+    print(f"Received customer query: {user_text}")
 
     prompt = f"""
     You are a polite, helpful Amharic-speaking customer service assistant for a spiritual books and leather goods business (@KAVODBOOK1).
@@ -84,10 +85,11 @@ async def handle_customer_message(event):
 
     try:
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=prompt,
         )
-        if response.text:
+        if response and response.text:
+            print(f"AI Response Generated: {response.text}")
             await event.reply(response.text)
     except Exception as e:
         print(f"Error calling Gemini API: {e}")
