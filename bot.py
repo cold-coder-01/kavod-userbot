@@ -4,21 +4,21 @@ import os
 import threading
 from google import genai
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
-# Credentials from my.telegram.org
 API_ID = 37292292
-API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Replace with your api_hash string
+API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Replace with your api_hash
+SESSION_STRING = "1BJWap1sBuyVzhHJbM203zrJgnSfn_Bm0K-t0rd9H-gR7b36O2GEw0b2cQrJ-1tNnznf0IpbwpRa-Uoju2YZ9agcDXC0awMBbDkZmC9r6lMPy9-7_MlANTHo_9kY10pgT0MUqUIlWW0UKScy2sdU83ret7cW8YTAcsX1civGfAez9_tTaXcoEus-sat8SdS180BVJ5oze1tOqYqqx2qAlQe139HBYfuJB9QQSZOtBUMzo_6NTzH1QA8_bYZAvtBaa4PSWsjQdtx14FYK1UyEsEF9JfBSMfOj7Jnuxxy_66HPYK6G7pk1qlbJV-QRA7DEL_k5JHbTHBgpW6GS0UL3xlZih31ntcp4="  # Paste string from Step 1
 
-GEMINI_API_KEY = "AQ.Ab8RN6JwVwUGPnHOtO8hUU-zpAQe0jtt_aGN2fqbWnrjCH-Ftg"  # Replace with your Gemini API key
+GEMINI_API_KEY = "AQ.Ab8RN6JwVwUGPnHOtO8hUU-zpAQe0jtt_aGN2fqbWnrjCH-Ftg"
 ADMIN_USER_ID = 6873889384
 
 daily_inventory = "ለዛሬ ሁሉም መጻሕፍት እና የቆዳ ዕቃዎች አሉ።"
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
-client = TelegramClient("kavod_session", API_ID, API_HASH)
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-# Simple HTTP server to satisfy Render Web Service health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -94,9 +94,7 @@ async def handle_customer_message(event):
 
 
 if __name__ == "__main__":
-    # Start background thread for Render port binding
     threading.Thread(target=run_health_server, daemon=True).start()
-
     print("Starting Kavod Personal Assistant Userbot...")
     client.start()
     client.run_until_disconnected()
