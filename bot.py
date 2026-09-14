@@ -27,14 +27,11 @@ logger = logging.getLogger("kavod")
 # ENVIRONMENT VARIABLES
 # ============================================================
 
-API_ID = int(os.environ["37292292"])
-API_HASH = os.environ["a53e3c11637b9378bfe82af1f0678524"]
-
-SESSION_STRING = os.environ["1BJWap1sBuyVzhHJbM203zrJgnSfn_Bm0K-t0rd9H-gR7b36O2GEw0b2cQrJ-1tNnznf0IpbwpRa-Uoju2YZ9agcDXC0awMBbDkZmC9r6lMPy9-7_MlANTHo_9kY10pgT0MUqUIlWW0UKScy2sdU83ret7cW8YTAcsX1civGfAez9_tTaXcoEus-sat8SdS180BVJ5oze1tOqYqqx2qAlQe139HBYfuJB9QQSZOtBUMzo_6NTzH1QA8_bYZAvtBaa4PSWsjQdtx14FYK1UyEsEF9JfBSMfOj7Jnuxxy_66HPYK6G7pk1qlbJV-QRA7DEL_k5JHbTHBgpW6GS0UL3xlZih31ntcp4="]
-
-GEMINI_API_KEY = os.environ["AQ.Ab8RN6JwVwUGPnHOtO8hUU-zpAQe0jtt_aGN2fqbWnrjCH-Ftg"]
-
-ADMIN_USER_ID = int(os.environ["6873889384"])
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["SESSION_STRING"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 
 
 # Optional but recommended.
