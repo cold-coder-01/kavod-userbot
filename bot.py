@@ -1,18 +1,37 @@
 import asyncio
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import os
+import threading
 from google import genai
 from telethon import TelegramClient, events
 
 # Credentials from my.telegram.org
-API_ID = 37292292  # Your numeric api_id
-API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Your api_hash string
+API_ID = 37292292   # Replace with your numeric api_id
+API_HASH = "a53e3c11637b9378bfe82af1f0678524"  # Replace with your api_hash string
 
-GEMINI_API_KEY = "your_gemini_api_key_here"
+GEMINI_API_KEY = "YOUR_GEMINI_KEY"  # Replace with your Gemini API key
 ADMIN_USER_ID = 6873889384
 
 daily_inventory = "ለዛሬ ሁሉም መጻሕፍት እና የቆዳ ዕቃዎች አሉ።"
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 client = TelegramClient("kavod_session", API_ID, API_HASH)
+
+
+# Simple HTTP server to satisfy Render Web Service health checks
+class HealthCheckHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Kavod Userbot is running.")
+
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
 
 @client.on(events.NewMessage(pattern=r"^/set_inventory(?:\s+(.*))?"))
@@ -69,6 +88,10 @@ async def handle_customer_message(event):
         print(f"Error calling Gemini API: {e}")
 
 
-print("Starting Kavod Personal Assistant Userbot...")
-client.start()
-client.run_until_disconnected()
+if __name__ == "__main__":
+    # Start background thread for Render port binding
+    threading.Thread(target=run_health_server, daemon=True).start()
+
+    print("Starting Kavod Personal Assistant Userbot...")
+    client.start()
+    client.run_until_disconnected()
