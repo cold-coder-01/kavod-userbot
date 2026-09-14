@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import threading
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -34,6 +35,24 @@ GREETING_WORDS = {
     "ሰላም", "ሰላም!", "selam!",
 }
 
+OUT_OF_STOCK_WORDS = {
+    "አልቋል",
+    "የለም",
+    "የሉም",
+    "አይገኝም",
+    "አይገኙም",
+    "out of stock",
+    "unavailable",
+}
+
+BOOK_WORDS = {
+    "መጽሐፍ",
+    "መጻሕፍት",
+    "book",
+    "books",
+    "bible",
+}
+
 
 def is_greeting(text: str) -> bool:
     return text.strip().lower() in GREETING_WORDS
@@ -45,6 +64,70 @@ async def is_admin_event(event) -> bool:
     sender = await event.get_sender()
     username = (getattr(sender, "username", "") or "").lower()
     return username in ADMIN_USERNAMES
+
+
+def split_inventory_entries(text: str) -> list[str]:
+    parts = re.split(r"[\n;።]+", text)
+    return [part.strip(" .፣,") for part in parts if part.strip(" .፣,")]
+
+
+def is_out_of_stock(entry: str) -> bool:
+    lowered = entry.lower()
+    return any(word in lowered for word in OUT_OF_STOCK_WORDS)
+
+
+def is_book_entry(entry: str) -> bool:
+    lowered = entry.lower()
+    return any(word in lowered for word in BOOK_WORDS)
+
+
+def available_book_entries() -> list[str]:
+    return [
+        entry
+        for entry in split_inventory_entries(daily_inventory)
+        if is_book_entry(entry) and not is_out_of_stock(entry)
+    ]
+
+
+def unavailable_book_entries() -> list[str]:
+    return [
+        entry
+        for entry in split_inventory_entries(daily_inventory)
+        if is_book_entry(entry) and is_out_of_stock(entry)
+    ]
+
+
+def asks_for_book_list(text: str) -> bool:
+    lowered = text.lower().strip()
+
+    if not any(word in lowered for word in BOOK_WORDS):
+        return False
+
+    list_signals = (
+        "አላችሁ",
+        "አሉ",
+        "ምን ምን",
+        "የትኞቹ",
+        "ዝርዝር",
+        "list",
+        "what books",
+        "which books",
+    )
+
+    return any(signal in lowered for signal in list_signals)
+
+
+def build_book_list_reply() -> str:
+    available = available_book_entries()
+
+    if not available:
+        return (
+            "ለዛሬ ያሉት መጻሕፍት በመረጃው ላይ አልተገለጹም። "
+            "የሚፈልጉትን የመጽሐፍ ስም ይላኩልኝ ላረጋግጥልዎት።"
+        )
+
+    lines = "\n".join(f"• {entry}" for entry in available)
+    return f"አዎ፣ ለዛሬ ያሉት መጻሕፍት፦\n{lines}"
 
 
 daily_inventory = (
@@ -116,17 +199,9 @@ INVENTORY RULES:
 14. Never invent books, products, prices, quantities, authors, colors, sizes, delivery fees, addresses, phone numbers, payment methods, or promotions.
 15. If a specific item is listed as available, say it is available.
 16. If a specific item is listed as unavailable, say it is currently unavailable.
-17. If the customer asks generally "መጽሐፍ አላችሁ?" and the inventory contains several specific books, do not say "all books are available". Reply naturally and ask which title they are looking for, or briefly mention only the titles actually listed.
-18. If the requested product is not clearly found in today's inventory, say you need the exact title/item to check. Do not answer yes or no.
-19. If the price is missing, say the price needs to be checked. Do not invent a price.
-20. If today's inventory has not been set by the admin, never claim that products are available.
-
-GOOD RESPONSE STYLE EXAMPLES:
-Customer: መጽሐፍ አላችሁ?
-Good: አዎ፣ ያሉን መጻሕፍት አሉ። የሚፈልጉትን የመጽሐፍ ስም ይላኩልኝ ላረጋግጥልዎት።
-
-Customer message is unclear.
-Good: ትንሽ ግልጽ አድርገው ይላኩልኝ፤ ምን ማለትዎ ነው?
+17. If the requested product is not clearly found in today's inventory, say you need the exact title/item to check. Do not answer yes or no.
+18. If the price is missing, say the price needs to be checked. Do not invent a price.
+19. If today's inventory has not been set by the admin, never claim that products are available.
 """
 
 
@@ -260,7 +335,12 @@ async def set_inventory_handler(event):
     new_inventory = event.pattern_match.group(1)
     if not new_inventory:
         await event.reply(
-            "ከ /set_inventory በኋላ የዛሬውን የዕቃ ሁኔታ ይጻፉ።"
+            "ከ /set_inventory በኋላ የዛሬውን የዕቃ ሁኔታ ይጻፉ።\n\n"
+            "ለምሳሌ፦\n"
+            "/set_inventory የጸሎት መጽሐፍ 350 ብር አለ። "
+            "የመዝሙር መጽሐፍ 300 ብር አለ። "
+            "Leather Bible 1200 ብር አለ። "
+            "ጥቁር የቆዳ ቦርሳ አልቋል።"
         )
         return
 
@@ -278,6 +358,10 @@ async def set_inventory_handler(event):
         "INVENTORY UPDATED | admin=%s | inventory=%r",
         admin_username,
         daily_inventory,
+    )
+    logger.info(
+        "AVAILABLE BOOK ENTRIES | %r",
+        available_book_entries(),
     )
 
     await event.reply(
@@ -347,6 +431,13 @@ async def customer_message_handler(event):
                 logger.info(
                     "FIXED GREETING | user_id=%s",
                     event.sender_id,
+                )
+            elif asks_for_book_list(customer_text):
+                reply_text = build_book_list_reply()
+                logger.info(
+                    "DIRECT BOOK LIST | user_id=%s | books=%r",
+                    event.sender_id,
+                    available_book_entries(),
                 )
             else:
                 reply_text = await generate_ai_response(
