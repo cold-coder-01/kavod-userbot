@@ -27,7 +27,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-15.10"
+BOT_VERSION = "2026-09-15.11"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 25
 NO_REPLY_TOKEN = "__NO_REPLY__"
@@ -81,28 +81,28 @@ def product_catalog_for_ai() -> list[dict]:
     ]
 
 
-def find_product_key(name: str | None) -> str | None:
-    if not name:
+def find_product_key(text: str | None) -> str | None:
+    if not text:
         return None
-    target = normalize(name)
+    target = normalize(text)
     if not target:
         return None
 
-    best_key = None
+    best = None
     best_score = 0
     for key, data in business_state["products"].items():
         for candidate in [key, *data.get("aliases", [])]:
-            candidate_normalized = normalize(candidate)
-            if not candidate_normalized:
+            c = normalize(candidate)
+            if not c:
                 continue
-            if target == candidate_normalized:
+            if target == c:
                 return key
-            if candidate_normalized in target or target in candidate_normalized:
-                score = len(candidate_normalized)
+            if c in target or target in c:
+                score = len(c)
                 if score > best_score:
+                    best = key
                     best_score = score
-                    best_key = key
-    return best_key
+    return best
 
 
 def exact_catalog_match(text: str) -> str | None:
@@ -123,17 +123,16 @@ def extract_json_object(text: str) -> dict | None:
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     try:
-        parsed = json.loads(cleaned)
-        return parsed if isinstance(parsed, dict) else None
+        value = json.loads(cleaned)
+        return value if isinstance(value, dict) else None
     except Exception:
         pass
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
+    start, end = cleaned.find("{"), cleaned.rfind("}")
     if start < 0 or end <= start:
         return None
     try:
-        parsed = json.loads(cleaned[start:end + 1])
-        return parsed if isinstance(parsed, dict) else None
+        value = json.loads(cleaned[start:end + 1])
+        return value if isinstance(value, dict) else None
     except Exception:
         return None
 
@@ -154,7 +153,7 @@ async def gemini_json(prompt: str, max_tokens: int = 450) -> dict | None:
             )
             if not response or not response.text:
                 return None
-            logger.info("GEMINI JSON RAW | %r", response.text[:1000])
+            logger.info("GEMINI JSON RAW | %r", response.text[:900])
             return extract_json_object(response.text)
         except Exception as error:
             logger.exception("GEMINI JSON ERROR | %s", error)
@@ -163,16 +162,17 @@ async def gemini_json(prompt: str, max_tokens: int = 450) -> dict | None:
 
 CUSTOMER_SYSTEM = f"""
 You are KAVOD BOOKS customer service on Telegram in Ethiopia.
-Act like an intelligent real Ethiopian sales representative, not a scripted bot.
+Act like a smart real Ethiopian sales representative, not a scripted bot.
 Understand Amharic, English, mixed language, slang, spelling mistakes and Amharic written with Latin letters.
-Use ONLY verified business facts supplied to you. Never invent price, stock, product details, color, size, payment, address or delivery facts.
-Never output fragments or unfinished sentences.
-If a message is unrelated human conversation or there is no safe useful KAVOD answer, output exactly {NO_REPLY_TOKEN}.
+Use ONLY verified facts supplied in the prompt.
+Never invent stock, price, product details, payment, color, size, address or delivery information.
+Never output fragments.
+If the message is unrelated human conversation or there is no safe useful KAVOD answer, output exactly {NO_REPLY_TOKEN}.
 Use short natural conversational Amharic unless the customer clearly prefers English.
 """
 
 
-async def gemini_text(prompt: str, temperature: float = 0.12, max_tokens: int = 320) -> str | None:
+async def gemini_text(prompt: str, temperature: float = 0.15, max_tokens: int = 320) -> str | None:
     async with gemini_semaphore:
         try:
             response = await asyncio.wait_for(
@@ -190,7 +190,7 @@ async def gemini_text(prompt: str, temperature: float = 0.12, max_tokens: int = 
             if not response or not response.text:
                 return None
             answer = response.text.strip()
-            logger.info("GEMINI TEXT RAW | %r", answer[:1000])
+            logger.info("GEMINI TEXT RAW | %r", answer[:800])
             if not answer or NO_REPLY_TOKEN in answer:
                 return None
             return answer
@@ -207,7 +207,7 @@ async def save_business_state() -> None:
 
 async def parse_admin_update(instruction: str) -> dict | None:
     prompt = f"""
-Convert this KAVOD BOOKS admin instruction into structured catalog updates.
+Convert the KAVOD BOOKS admin instruction into structured catalog updates.
 The admin may use Amharic, English, mixed language or transliterated Amharic.
 
 CURRENT CATALOG:
@@ -233,8 +233,8 @@ Rules:
 - finished/sold out/out of stock/አልቋል/የለም => available=false.
 - back/in stock/available/አለ => available=true.
 - A price-only instruction changes price without changing stock.
-- Never delete products not mentioned.
-- Reuse existing canonical product names whenever possible.
+- Never delete unmentioned products.
+- Reuse existing canonical product names where possible.
 """
     return await gemini_json(prompt)
 
@@ -242,17 +242,17 @@ Rules:
 def apply_admin_updates(parsed: dict) -> list[str]:
     summaries = []
     for update in parsed.get("updates", []):
-        product_name = str(update.get("product") or "").strip()
-        if not product_name:
+        name = str(update.get("product") or "").strip()
+        if not name:
             continue
-        key = find_product_key(product_name) or product_name
+        key = find_product_key(name) or name
         if key not in business_state["products"]:
             business_state["products"][key] = {
                 "price": None,
                 "available": None,
                 "category": update.get("category") or "other",
                 "aliases": [],
-                "design_tag": tagify(product_name),
+                "design_tag": tagify(name),
             }
         item = business_state["products"][key]
         if update.get("price") is not None:
@@ -261,11 +261,10 @@ def apply_admin_updates(parsed: dict) -> list[str]:
             item["available"] = bool(update["available"])
         if update.get("category"):
             item["category"] = update["category"]
-
         aliases = set(item.get("aliases", []))
-        aliases.update(alias for alias in update.get("aliases", []) if alias)
-        if normalize(product_name) != normalize(key):
-            aliases.add(product_name)
+        aliases.update(x for x in update.get("aliases", []) if x)
+        if normalize(name) != normalize(key):
+            aliases.add(name)
         item["aliases"] = sorted(aliases)
         item.setdefault("design_tag", tagify(key))
 
@@ -288,7 +287,7 @@ async def load_business_state() -> None:
             loaded = json.loads(text[len(STATE_MARKER):].strip())
             if isinstance(loaded, dict) and isinstance(loaded.get("products"), dict):
                 merged = deepcopy(DEFAULT_STATE)
-                merged.update({key: value for key, value in loaded.items() if key in merged})
+                merged.update({k: v for k, v in loaded.items() if k in merged})
                 business_state = merged
                 logger.info("BUSINESS STATE LOADED | products=%s", len(business_state["products"]))
                 return
@@ -310,10 +309,10 @@ async def load_business_state() -> None:
         logger.exception("LEGACY MIGRATION FAILED | %s", error)
 
 
-async def get_customer_context(event, limit: int = 6) -> tuple[str, list[str]]:
+async def get_customer_context(event, limit: int = 8) -> tuple[str, list[str]]:
     rows = []
     try:
-        async for message in telegram.iter_messages(event.chat_id, limit=30):
+        async for message in telegram.iter_messages(event.chat_id, limit=40):
             if message.id == event.message.id or message.out:
                 continue
             text = (message.raw_text or "").strip()
@@ -324,11 +323,9 @@ async def get_customer_context(event, limit: int = 6) -> tuple[str, list[str]]:
                 break
     except Exception as error:
         logger.warning("CUSTOMER CONTEXT LOAD FAILED | %s", error)
-
     rows.reverse()
     messages = [text for _, text in rows]
-    context = "\n".join(f"CUSTOMER: {text}" for text in messages)
-    return context, messages
+    return "\n".join(f"CUSTOMER: {text}" for text in messages), messages
 
 
 def last_discussed_product(messages: list[str]) -> str | None:
@@ -339,16 +336,69 @@ def last_discussed_product(messages: list[str]) -> str | None:
     return None
 
 
+def contextual_followup(text: str, last_product: str | None) -> dict | None:
+    """Preserve the subject of short obvious follow-ups before asking Gemini to route again."""
+    if not last_product:
+        return None
+
+    cleaned = normalize(text)
+    words = cleaned.split()
+    if not cleaned or len(words) > 7:
+        return None
+
+    price_signals = (
+        "price", "cost", "how much", "sint", "sent", "wagaw", "waga",
+        "ዋጋ", "ስንት", "ብር",
+    )
+    photo_signals = (
+        "photo", "picture", "image", "design", "pic", "foto",
+        "ፎቶ", "ዲዛይን", "ምስል",
+    )
+    availability_signals = (
+        "available", "stock", "alachew", "alachu", "ale", "alu",
+        "አለ", "አላችሁ", "አሉ", "አለን", "ይገኛ",
+    )
+
+    if any(signal in cleaned for signal in price_signals):
+        return {
+            "should_reply": True,
+            "intent": "price",
+            "product": last_product,
+            "wants_photo": False,
+            "confidence": 1.0,
+        }
+
+    if any(signal in cleaned for signal in photo_signals):
+        return {
+            "should_reply": True,
+            "intent": "photo",
+            "product": last_product,
+            "wants_photo": True,
+            "confidence": 1.0,
+        }
+
+    if any(signal in cleaned for signal in availability_signals):
+        return {
+            "should_reply": True,
+            "intent": "availability",
+            "product": last_product,
+            "wants_photo": False,
+            "confidence": 1.0,
+        }
+
+    return None
+
+
 def normalize_router_decision(result: dict | None, last_product: str | None) -> dict | None:
     if not isinstance(result, dict):
         return None
 
-    allowed_intents = {
-        "greeting", "product_list", "product_inquiry", "price",
-        "availability", "photo", "address", "delivery", "order", "other"
+    allowed = {
+        "greeting", "product_list", "product_inquiry", "price", "availability",
+        "photo", "address", "delivery", "order", "other",
     }
     intent = str(result.get("intent") or "other").lower().strip()
-    if intent not in allowed_intents:
+    if intent not in allowed:
         intent = "other"
 
     should_reply = result.get("should_reply")
@@ -371,13 +421,9 @@ def normalize_router_decision(result: dict | None, last_product: str | None) -> 
     product = result.get("product")
     if product in {"null", "none", "NONE", "None", ""}:
         product = None
-
     if product:
         product = find_product_key(str(product)) or str(product)
-
-    if not product and last_product and intent in {
-        "price", "availability", "photo", "order", "product_inquiry"
-    }:
+    if not product and last_product and intent in {"price", "availability", "photo", "order", "product_inquiry"}:
         product = last_product
 
     return {
@@ -389,26 +435,21 @@ def normalize_router_decision(result: dict | None, last_product: str | None) -> 
     }
 
 
-async def structured_router(text: str, context: str, last_product: str | None, product_hint: str | None) -> dict | None:
+async def classify_customer_message(text: str, context: str, last_product: str | None) -> dict | None:
+    product_hint = find_product_key(text)
+
     prompt = f"""
 You are the semantic intent router for KAVOD BOOKS customer service.
-Understand Amharic, English, mixed language, slang, spelling mistakes and Amharic written in Latin letters.
-The Telegram account is also used by real humans, so unrelated personal conversation must be ignored.
+Understand Amharic, English, mixed language, slang, typos and transliterated Amharic.
+The account is also used by real humans, so unrelated personal conversation must be ignored.
 
 KNOWN PRODUCTS:
 {json.dumps(product_catalog_for_ai(), ensure_ascii=False)}
-
-PRODUCT DIRECTLY MENTIONED IN NEW MESSAGE:
-{product_hint or 'None'}
-
-LAST DISCUSSED PRODUCT:
-{last_product or 'None'}
-
+DIRECT PRODUCT IN NEW MESSAGE: {product_hint or 'None'}
+LAST DISCUSSED PRODUCT: {last_product or 'None'}
 RECENT CUSTOMER MESSAGES:
 {context or 'None'}
-
-NEW MESSAGE:
-{text}
+NEW MESSAGE: {text}
 
 Return:
 {{
@@ -420,83 +461,50 @@ Return:
 }}
 
 Rules:
-- "selam", hello and normal greetings => greeting and should_reply=true.
-- unrelated personal conversation => should_reply=false.
-- a known product by itself => product_inquiry.
-- a price question such as "sint nw?" inherits the relevant product from context.
-- photo/design questions inherit or use the product directly mentioned.
-- if PRODUCT DIRECTLY MENTIONED is present, use that canonical product.
-"""
-    return normalize_router_decision(await gemini_json(prompt), last_product)
-
-
-async def plain_router(text: str, context: str, last_product: str | None, product_hint: str | None) -> dict | None:
-    """Fallback when Gemini's structured JSON routing is malformed or over-conservative."""
-    prompt = f"""
-Act only as a KAVOD BOOKS intent classifier. Do NOT answer the customer.
-Understand imperfect Amharic, English and transliterated Amharic naturally.
-
-KNOWN PRODUCTS: {json.dumps([p['name'] for p in product_catalog_for_ai()], ensure_ascii=False)}
-DIRECT PRODUCT IN MESSAGE: {product_hint or 'NONE'}
-LAST DISCUSSED PRODUCT: {last_product or 'NONE'}
-RECENT CUSTOMER MESSAGES: {context or 'NONE'}
-NEW MESSAGE: {text}
-
-Output EXACTLY one line with five fields separated by |:
-REPLY_OR_IGNORE | INTENT | PRODUCT_OR_NONE | PHOTO_TRUE_OR_FALSE | CONFIDENCE
-
-INTENT must be one of: greeting, product_list, product_inquiry, price, availability, photo, address, delivery, order, other.
-Examples:
-REPLY|greeting|NONE|false|0.99
-REPLY|photo|Leather Bible|true|0.98
-REPLY|price|Leather Bible|false|0.95
-IGNORE|other|NONE|false|0.98
-
-Use REPLY for genuine KAVOD/customer-service messages. Use IGNORE for unrelated human conversation.
+- greetings => greeting.
+- unrelated personal talk => should_reply=false.
+- known product alone => product_inquiry.
+- short follow-ups inherit LAST DISCUSSED PRODUCT.
+- photo/design questions => photo.
+- price/how much/sint/wagaw questions => price.
 """
 
-    raw = await gemini_text(prompt, temperature=0.0, max_tokens=100)
-    if not raw:
-        return None
-
-    line = raw.strip().splitlines()[0].strip()
-    logger.info("PLAIN ROUTER RAW | %r", line)
-    parts = [part.strip() for part in line.split("|")]
-    if len(parts) != 5:
-        return None
-
-    action, intent, product, photo, confidence = parts
-    result = {
-        "should_reply": action.upper() == "REPLY",
-        "intent": intent.lower(),
-        "product": None if product.upper() == "NONE" else product,
-        "wants_photo": photo.lower() == "true",
-        "confidence": confidence,
-    }
-    return normalize_router_decision(result, last_product)
-
-
-async def classify_customer_message(text: str, context: str, last_product: str | None) -> dict | None:
-    product_hint = find_product_key(text)
-    first = await structured_router(text, context, last_product, product_hint)
-
-    if first and first.get("should_reply") and first.get("confidence", 0) >= 0.55:
-        logger.info("ROUTER STRUCTURED ACCEPTED | %r", first)
+    first = normalize_router_decision(await gemini_json(prompt), last_product)
+    if first and first.get("should_reply") and first.get("confidence", 0) >= 0.5:
         return first
 
-    # A confident IGNORE is checked once more by a different Gemini format before silence.
-    second = await plain_router(text, context, last_product, product_hint)
-    if second:
-        logger.info("ROUTER PLAIN RESULT | %r", second)
-        if second.get("should_reply") and second.get("confidence", 0) >= 0.55:
-            return second
-        if not second.get("should_reply") and second.get("confidence", 0) >= 0.70:
-            return second
+    fallback_prompt = f"""
+Classify this KAVOD BOOKS message. Do not answer it.
+Known products: {json.dumps([p['name'] for p in product_catalog_for_ai()], ensure_ascii=False)}
+Direct product: {product_hint or 'NONE'}
+Last product: {last_product or 'NONE'}
+Context: {context or 'NONE'}
+Message: {text}
 
-    # Minimal safety net for obvious customer-service messages if both model formats fail.
+Return one line exactly:
+REPLY_OR_IGNORE|INTENT|PRODUCT_OR_NONE|PHOTO_TRUE_OR_FALSE|CONFIDENCE
+Examples:
+REPLY|price|Leather Bible|false|0.98
+REPLY|photo|Leather Bible|true|0.98
+IGNORE|other|NONE|false|0.95
+"""
+    raw = await gemini_text(fallback_prompt, temperature=0.0, max_tokens=100)
+    if raw:
+        parts = [x.strip() for x in raw.splitlines()[0].split("|")]
+        if len(parts) == 5:
+            result = {
+                "should_reply": parts[0].upper() == "REPLY",
+                "intent": parts[1].lower(),
+                "product": None if parts[2].upper() == "NONE" else parts[2],
+                "wants_photo": parts[3].lower() == "true",
+                "confidence": parts[4],
+            }
+            second = normalize_router_decision(result, last_product)
+            if second:
+                return second
+
     cleaned = normalize(text)
-    greeting_words = {"selam", "salam", "hello", "hi", "hey", "ሰላም"}
-    if cleaned in greeting_words:
+    if cleaned in {"selam", "salam", "hello", "hi", "hey", "ሰላም"}:
         return {
             "should_reply": True,
             "intent": "greeting",
@@ -506,17 +514,15 @@ async def classify_customer_message(text: str, context: str, last_product: str |
         }
 
     if product_hint:
-        photo_words = ("photo", "picture", "image", "design", "ፎቶ", "ዲዛይን")
-        if any(word in cleaned for word in photo_words):
-            return {
-                "should_reply": True,
-                "intent": "photo",
-                "product": product_hint,
-                "wants_photo": True,
-                "confidence": 1.0,
-            }
+        return {
+            "should_reply": True,
+            "intent": "product_inquiry",
+            "product": product_hint,
+            "wants_photo": False,
+            "confidence": 0.95,
+        }
 
-    return second or first
+    return first
 
 
 def build_verified_facts(decision: dict) -> dict:
@@ -526,7 +532,6 @@ def build_verified_facts(decision: dict) -> dict:
         "product": None,
         "available_products": None,
     }
-
     key = find_product_key(decision.get("product"))
     if key:
         item = business_state["products"][key]
@@ -537,14 +542,12 @@ def build_verified_facts(decision: dict) -> dict:
             "category": item.get("category"),
             "design_tag": item.get("design_tag") or tagify(key),
         }
-
     if decision.get("intent") == "product_list":
         facts["available_products"] = [
             {"name": name, "price": data.get("price")}
             for name, data in business_state["products"].items()
             if data.get("available") is True
         ]
-
     return facts
 
 
@@ -559,15 +562,11 @@ def factual_fallback(decision: dict, facts: dict, photos_available: bool) -> str
     if intent == "delivery":
         return facts["delivery"]
     if intent == "product_list":
-        products = facts.get("available_products") or []
-        if not products:
+        items = facts.get("available_products") or []
+        if not items:
             return None
-        lines = [
-            f"• {item['name']} — {item['price']} ብር" if item.get("price") is not None else f"• {item['name']}"
-            for item in products
-        ]
+        lines = [f"• {x['name']} — {x['price']} ብር" if x.get("price") is not None else f"• {x['name']}" for x in items]
         return "አሁን ያሉን ዕቃዎች፦\n" + "\n".join(lines)
-
     if not product:
         return None
 
@@ -598,27 +597,17 @@ async def generate_customer_reply(text: str, context: str, decision: dict, facts
     prompt = f"""
 RECENT CUSTOMER MESSAGES:
 {context or 'None'}
+CURRENT MESSAGE: {text}
+UNDERSTOOD INTENT: {json.dumps(decision, ensure_ascii=False)}
+VERIFIED FACTS: {json.dumps(facts, ensure_ascii=False)}
+PHOTOS AVAILABLE: {photos_available}
 
-CURRENT CUSTOMER MESSAGE:
-{text}
-
-UNDERSTOOD INTENT:
-{json.dumps(decision, ensure_ascii=False)}
-
-VERIFIED KAVOD FACTS:
-{json.dumps(facts, ensure_ascii=False)}
-
-PHOTOS AVAILABLE:
-{photos_available}
-
-Write exactly what KAVOD should send to the customer now.
-Use only verified facts. Write one or two complete natural sentences.
-If intent=price and a verified price exists, include that exact number.
-If intent=product_inquiry and stock/price are known, mention them naturally.
-If intent=photo and photos are available, tell the customer you will send/show them.
-Never output a fragment.
+Write exactly what KAVOD should send now.
+Use one or two complete natural sentences and only verified facts.
+For price intent include the exact verified price.
+For product inquiry mention known availability and price.
+For photo intent with photos available say you will show/send them.
 """
-
     answer = await gemini_text(prompt)
     product = facts.get("product")
     intent = decision.get("intent")
@@ -642,7 +631,6 @@ async def saved_design_messages(tag: str, limit: int = 6) -> list:
     wanted = normalize(f"{DESIGN_MARKER} {tag}")
     found = []
     checked = 0
-
     async for message in telegram.iter_messages("me", limit=500):
         checked += 1
         if not message.media:
@@ -652,7 +640,6 @@ async def saved_design_messages(tag: str, limit: int = 6) -> list:
             found.append(message)
             if len(found) >= limit:
                 break
-
     found.reverse()
     logger.info("DESIGN LOOKUP | tag=%s | checked=%s | found=%s", tag, checked, len(found))
     return found
@@ -733,7 +720,7 @@ async def designs_handler(event):
     if not messages:
         await event.reply(f"❌ `{tag}`: 0 saved designs found.")
         return
-    ids = ", ".join(str(message.id) for message in messages)
+    ids = ", ".join(str(x.id) for x in messages)
     await event.reply(f"✅ `{tag}`: {len(messages)} saved design(s) found.\nSaved Message IDs: {ids}")
 
 
@@ -747,12 +734,10 @@ async def handle_admin_memory_update(event, instruction: str):
             "/remember Leather Bible is back in stock"
         )
         return
-
     parsed = await parse_admin_update(instruction)
     if not parsed:
         await event.reply("Update መረዳት አልቻልኩም፤ ምንም ነገር አልቀየርኩም።")
         return
-
     before = deepcopy(business_state)
     summaries = apply_admin_updates(parsed)
     if not summaries:
@@ -760,7 +745,6 @@ async def handle_admin_memory_update(event, instruction: str):
         business_state.update(before)
         await event.reply("ምንም የሚቀየር መረጃ አላገኘሁም።")
         return
-
     try:
         await save_business_state()
     except Exception as error:
@@ -769,7 +753,6 @@ async def handle_admin_memory_update(event, instruction: str):
         logger.exception("STATE SAVE FAILED | %s", error)
         await event.reply("Update ማስቀመጥ አልተቻለም።")
         return
-
     await event.reply("✅ አስታውሻለሁ፦\n" + "\n".join(f"• {x}" for x in summaries))
 
 
@@ -794,12 +777,11 @@ async def add_design_handler(event):
         await event.reply("Attach a photo and use caption: /add_design leather_bible")
         return
     if not event.message.media:
-        await event.reply("This command must be sent as the caption of a PNG/JPG photo.")
+        await event.reply("This command must be sent as a PNG/JPG photo caption.")
         return
     try:
         await event.forward_to("me")
         await event.reply(f"✅ `{tag}` design saved.")
-        logger.info("DESIGN SAVED | tag=%s", tag)
     except Exception as error:
         logger.exception("DESIGN SAVE FAILED | %s", error)
         await event.reply("Design could not be saved.")
@@ -825,6 +807,7 @@ async def customer_message_handler(event):
         context, previous_messages = await get_customer_context(event)
         last_product = last_discussed_product(previous_messages)
         direct_product = exact_catalog_match(text)
+        mentioned_product = find_product_key(text)
 
         if direct_product:
             decision = {
@@ -834,8 +817,18 @@ async def customer_message_handler(event):
                 "wants_photo": False,
                 "confidence": 1.0,
             }
+        elif mentioned_product and any(x in normalize(text) for x in ("photo", "picture", "image", "design", "foto", "ፎቶ", "ዲዛይን")):
+            decision = {
+                "should_reply": True,
+                "intent": "photo",
+                "product": mentioned_product,
+                "wants_photo": True,
+                "confidence": 1.0,
+            }
         else:
-            decision = await classify_customer_message(text, context, last_product)
+            decision = contextual_followup(text, last_product)
+            if not decision:
+                decision = await classify_customer_message(text, context, last_product)
 
         if not decision or not decision.get("should_reply"):
             logger.info("PASSIVE ROUTER | %r", decision)
@@ -854,8 +847,11 @@ async def customer_message_handler(event):
 
         wants_photo = bool(decision.get("wants_photo") or decision.get("intent") == "photo")
         design_tag = product.get("design_tag") if product else None
-        design_messages = await saved_design_messages(design_tag, limit=1) if wants_photo and design_tag else []
-        photos_available = bool(design_messages)
+        photos_available = bool(
+            wants_photo
+            and design_tag
+            and await saved_design_messages(design_tag, limit=1)
+        )
 
         async with telegram.action(event.chat_id, "typing"):
             reply = await generate_customer_reply(text, context, decision, facts, photos_available)
