@@ -26,7 +26,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-15.2"
+BOT_VERSION = "2026-09-15.3"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 20
 MAX_HISTORY_TURNS = 4
@@ -73,6 +73,20 @@ DESIGN_SIGNALS = {
     "model", "style", "sample", "see it", "show me",
 }
 
+KAVOD_TOPIC_SIGNALS = {
+    "kavod", "book", "books", "bible", "leather", "metshaf", "metsahaf",
+    "መጽሐፍ", "መጻሕፍት", "መጽሐፍ ቅዱስ", "ቆዳ", "የቆዳ",
+    "price", "ዋጋ", "sint", "ስንት", "stock", "available", "አለ", "አላችሁ",
+    "order", "ዘዝ", "ይዘዙ", "delivery", "ዴሊቨሪ", "ride", "ሞተረኛ",
+    "address", "location", "አድራሻ", "ፎቶ", "photo", "design", "ዲዛይን",
+}
+
+FOLLOW_UP_SIGNALS = {
+    "sint new", "sint naw", "ዋጋው", "ዋጋውስ", "ስንት ነው", "ስንት ነው?",
+    "ale", "alu", "አለ", "አሉ", "የት", "yet", "photo?", "design?",
+    "enezi", "እነዚህ", "ያንን", "yannen", "this one", "that one",
+}
+
 SUSPICIOUS_OUTPUT_MARKERS = (
     "inventory:", "customer:", "kavod:", "system:", "assistant:",
     "->", "[glitch", "**", "/no/", "/sure/", "/okay",
@@ -117,6 +131,28 @@ def design_tag_from_text(text: str) -> str | None:
     ):
         return "leather_bible"
     return None
+
+
+def has_kavod_topic(text: str) -> bool:
+    lowered = normalize(text)
+    return any(signal in lowered for signal in KAVOD_TOPIC_SIGNALS)
+
+
+def looks_like_sales_followup(text: str) -> bool:
+    lowered = normalize(text).strip("!?.,።፣")
+    if len(lowered) > 35:
+        return False
+    return any(signal in lowered for signal in FOLLOW_UP_SIGNALS)
+
+
+def should_consider_gemini(text: str, user_id: int) -> bool:
+    if has_kavod_topic(text):
+        return True
+
+    if conversation_history[user_id] and looks_like_sales_followup(text):
+        return True
+
+    return False
 
 
 async def is_admin_event(event) -> bool:
@@ -188,6 +224,9 @@ def meaningless_ai_output(text: str) -> bool:
         return True
 
     if len(stripped) <= 2:
+        return True
+
+    if len(stripped.split()) == 1 and stripped.isascii() and len(stripped) <= 5:
         return True
 
     return False
@@ -517,11 +556,18 @@ async def customer_message_handler(event):
                 reply_text = KAVOD_DELIVERY
                 logger.info("DIRECT DELIVERY | user_id=%s", event.sender_id)
 
-            else:
+            elif should_consider_gemini(customer_text, event.sender_id):
                 reply_text = await generate_ai_response(
                     customer_message=customer_text,
                     user_id=event.sender_id,
                     first_name=first_name,
+                )
+
+            else:
+                logger.info(
+                    "PASSIVE RELEVANCE GATE | sender_id=%s | text=%r",
+                    event.sender_id,
+                    customer_text,
                 )
 
         if reply_text is None:
