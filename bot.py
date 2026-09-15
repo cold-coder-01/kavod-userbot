@@ -27,7 +27,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-15.4"
+BOT_VERSION = "2026-09-15.5"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 25
 NO_REPLY_TOKEN = "__NO_REPLY__"
@@ -116,22 +116,58 @@ def find_product_key(name: str | None) -> str | None:
     return best_key
 
 
+def extract_json_object(text: str) -> dict | None:
+    if not text:
+        return None
+
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    candidate = cleaned[start:end + 1]
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
 async def gemini_json(prompt: str, max_tokens: int = 700) -> dict | None:
     async with gemini_semaphore:
         try:
             request = ai_client.aio.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=prompt,
+                contents=(
+                    prompt
+                    + "\n\nIMPORTANT: Return one valid JSON object only. No markdown fences, no explanation."
+                ),
                 config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
                     temperature=0.0,
                     max_output_tokens=max_tokens,
                 ),
             )
             response = await asyncio.wait_for(request, timeout=GEMINI_TIMEOUT_SECONDS)
             if not response or not response.text:
+                logger.warning("GEMINI JSON EMPTY")
                 return None
-            return json.loads(response.text)
+
+            logger.info("GEMINI JSON RAW | %r", response.text[:1200])
+            parsed = extract_json_object(response.text)
+            if parsed is None:
+                logger.warning("GEMINI JSON PARSE FAILED | raw=%r", response.text[:1200])
+            return parsed
+
         except Exception as error:
             logger.exception("GEMINI JSON ERROR | %s", error)
             return None
