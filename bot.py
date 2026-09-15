@@ -27,7 +27,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-15.5"
+BOT_VERSION = "2026-09-15.6"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 25
 NO_REPLY_TOKEN = "__NO_REPLY__"
@@ -114,6 +114,20 @@ def find_product_key(name: str | None) -> str | None:
                     best_key = key
 
     return best_key
+
+
+def exact_catalog_match(text: str) -> str | None:
+    target = normalize(text)
+    if not target:
+        return None
+
+    for key, data in business_state["products"].items():
+        candidates = [key, *data.get("aliases", [])]
+        for candidate in candidates:
+            if target == normalize(candidate):
+                return key
+
+    return None
 
 
 def extract_json_object(text: str) -> dict | None:
@@ -676,7 +690,23 @@ async def customer_message_handler(event):
         )
 
         chat_context = await get_chat_context(event)
-        decision = await classify_customer_message(customer_text, chat_context)
+
+        direct_product = exact_catalog_match(customer_text)
+        if direct_product:
+            decision = {
+                "should_reply": True,
+                "intent": "product_inquiry",
+                "product": direct_product,
+                "wants_photo": False,
+                "confidence": 1.0,
+            }
+            logger.info(
+                "DIRECT CATALOG MATCH | sender_id=%s | product=%s",
+                event.sender_id,
+                direct_product,
+            )
+        else:
+            decision = await classify_customer_message(customer_text, chat_context)
 
         if not decision:
             logger.info("PASSIVE | router unavailable | sender_id=%s", event.sender_id)
