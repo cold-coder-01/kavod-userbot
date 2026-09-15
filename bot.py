@@ -26,7 +26,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-15.1"
+BOT_VERSION = "2026-09-15.2"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 20
 MAX_HISTORY_TURNS = 4
@@ -178,6 +178,21 @@ def suspicious_ai_output(text: str) -> bool:
     return any(marker in lowered for marker in SUSPICIOUS_OUTPUT_MARKERS)
 
 
+def meaningless_ai_output(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+
+    meaningful_chars = [char for char in stripped if char.isalnum()]
+    if len(meaningful_chars) < 2:
+        return True
+
+    if len(stripped) <= 2:
+        return True
+
+    return False
+
+
 daily_inventory = "የዛሬ የዕቃ መረጃ ገና በአድሚን አልተዘጋጀም።"
 conversation_history = defaultdict(list)
 gemini_semaphore = asyncio.Semaphore(3)
@@ -280,6 +295,7 @@ Permanent delivery rule: {KAVOD_DELIVERY}
 PASSIVE MODE IS IMPORTANT:
 Only reply when the new message clearly concerns KAVOD, its products, stock, price, ordering, delivery, address, product designs, or clearly continues a recent KAVOD customer-service conversation.
 If the message is unrelated personal conversation, casual chatter between humans, an acknowledgement that needs no answer, an unclear fragment, or you do not have enough context to respond confidently, output exactly {NO_REPLY_TOKEN} and nothing else.
+Do not output punctuation, filler, or placeholder text when choosing not to reply.
 Do not ask the person to clarify just because you do not understand. Silence is preferred when context is insufficient.
 Keep most actual replies to one or two short sentences.
 """
@@ -316,6 +332,7 @@ New incoming message:
 
 Decide whether KAVOD customer service should reply.
 If this is not clearly a KAVOD/customer-service message or there is not enough context, output exactly {NO_REPLY_TOKEN}.
+Do not output punctuation or filler instead of {NO_REPLY_TOKEN}.
 Otherwise answer only the new message naturally and briefly.
 """
 
@@ -341,11 +358,16 @@ Otherwise answer only the new message naturally and briefly.
                     logger.info("GEMINI PASSIVE | user_id=%s", user_id)
                     return None
 
-                if answer and not suspicious_ai_output(answer):
-                    logger.info("GEMINI SUCCESS | user_id=%s | reply=%r", user_id, answer)
-                    return answer
+                if meaningless_ai_output(answer):
+                    logger.info("GEMINI MEANINGLESS -> PASSIVE | user_id=%s | reply=%r", user_id, answer)
+                    return None
 
-                logger.warning("GEMINI REJECTED OUTPUT | user_id=%s | reply=%r", user_id, answer)
+                if suspicious_ai_output(answer):
+                    logger.warning("GEMINI REJECTED OUTPUT | user_id=%s | reply=%r", user_id, answer)
+                    return None
+
+                logger.info("GEMINI SUCCESS | user_id=%s | reply=%r", user_id, answer)
+                return answer
 
         except asyncio.TimeoutError:
             logger.error("GEMINI TIMEOUT | user_id=%s", user_id)
