@@ -26,10 +26,11 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 EXPECTED_ACCOUNT_ID = int(os.environ.get("EXPECTED_ACCOUNT_ID", "0"))
 
-BOT_VERSION = "2026-09-14.4"
+BOT_VERSION = "2026-09-15.1"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_TIMEOUT_SECONDS = 20
 MAX_HISTORY_TURNS = 4
+NO_REPLY_TOKEN = "__NO_REPLY__"
 
 INVENTORY_MARKER = "#KAVOD_INVENTORY"
 DESIGN_MARKER = "/add_design"
@@ -186,10 +187,7 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 async def save_inventory_persistently() -> None:
-    await telegram.send_message(
-        "me",
-        f"{INVENTORY_MARKER}\n{daily_inventory}",
-    )
+    await telegram.send_message("me", f"{INVENTORY_MARKER}\n{daily_inventory}")
     logger.info("INVENTORY PERSISTED TO SAVED MESSAGES")
 
 
@@ -197,22 +195,14 @@ async def load_persisted_inventory() -> None:
     global daily_inventory
 
     try:
-        async for message in telegram.iter_messages(
-            "me",
-            search=INVENTORY_MARKER,
-            limit=20,
-        ):
+        async for message in telegram.iter_messages("me", search=INVENTORY_MARKER, limit=20):
             text = (message.raw_text or "").strip()
             if text.startswith(INVENTORY_MARKER):
                 saved_inventory = text[len(INVENTORY_MARKER):].strip()
                 if saved_inventory:
                     daily_inventory = saved_inventory
-                    logger.info(
-                        "PERSISTED INVENTORY LOADED | inventory=%r",
-                        daily_inventory,
-                    )
+                    logger.info("PERSISTED INVENTORY LOADED | inventory=%r", daily_inventory)
                     return
-
         logger.info("NO PERSISTED INVENTORY FOUND")
     except Exception as error:
         logger.exception("FAILED TO LOAD PERSISTED INVENTORY | %s", error)
@@ -222,11 +212,7 @@ async def send_saved_designs(event, tag: str) -> bool:
     search_text = f"{DESIGN_MARKER} {tag}"
     design_messages = []
 
-    async for message in telegram.iter_messages(
-        "me",
-        search=search_text,
-        limit=10,
-    ):
+    async for message in telegram.iter_messages("me", search=search_text, limit=10):
         if message.media:
             design_messages.append(message)
 
@@ -247,11 +233,7 @@ async def send_saved_designs(event, tag: str) -> bool:
             buffer = io.BytesIO(data)
             buffer.name = f"{tag}_{index}{extension}"
 
-            await telegram.send_file(
-                event.chat_id,
-                buffer,
-                caption=f"ዲዛይን {index}",
-            )
+            await telegram.send_file(event.chat_id, buffer, caption=f"ዲዛይን {index}")
         except Exception as error:
             logger.exception("FAILED TO SEND DESIGN | tag=%s | %s", tag, error)
 
@@ -285,7 +267,7 @@ def run_health_server():
 
 
 SYSTEM_INSTRUCTION = f"""
-You are KAVOD BOOKS customer service.
+You are KAVOD BOOKS customer service inside a Telegram account also used by real humans.
 Speak naturally and briefly in conversational Amharic unless the customer explicitly requests another language.
 Sound like a real Ethiopian shop employee.
 Understand common Amharic written with Latin letters such as metshaf, alachew, sint new, and yet nachihu.
@@ -294,8 +276,12 @@ Never invent products, prices, stock, delivery, addresses, payment details, or o
 Today's inventory supplied by the admin is the only source of truth for stock and price.
 Permanent KAVOD address: {KAVOD_ADDRESS}
 Permanent delivery rule: {KAVOD_DELIVERY}
-If the customer's meaning is unclear, ask one short clarification question instead of guessing.
-Keep most replies to one or two short sentences.
+
+PASSIVE MODE IS IMPORTANT:
+Only reply when the new message clearly concerns KAVOD, its products, stock, price, ordering, delivery, address, product designs, or clearly continues a recent KAVOD customer-service conversation.
+If the message is unrelated personal conversation, casual chatter between humans, an acknowledgement that needs no answer, an unclear fragment, or you do not have enough context to respond confidently, output exactly {NO_REPLY_TOKEN} and nothing else.
+Do not ask the person to clarify just because you do not understand. Silence is preferred when context is insufficient.
+Keep most actual replies to one or two short sentences.
 """
 
 
@@ -311,9 +297,9 @@ def recent_customer_context(user_id: int) -> str:
     return " | ".join(messages[-MAX_HISTORY_TURNS:])
 
 
-async def generate_ai_response(customer_message: str, user_id: int, first_name: str) -> str:
+async def generate_ai_response(customer_message: str, user_id: int, first_name: str) -> str | None:
     prompt = f"""
-Verified shop facts for today:
+Verified KAVOD shop facts for today:
 {daily_inventory}
 
 Permanent shop address:
@@ -322,13 +308,15 @@ Permanent shop address:
 Permanent delivery rule:
 {KAVOD_DELIVERY}
 
-Recent customer messages:
-{recent_customer_context(user_id)}
+Recent KAVOD customer messages, if any:
+{recent_customer_context(user_id) or 'None'}
 
-New customer message:
+New incoming message:
 {customer_message}
 
-Answer only the customer's new message. Do not repeat any headings or labels from this prompt.
+Decide whether KAVOD customer service should reply.
+If this is not clearly a KAVOD/customer-service message or there is not enough context, output exactly {NO_REPLY_TOKEN}.
+Otherwise answer only the new message naturally and briefly.
 """
 
     logger.info("GEMINI START | user_id=%s | text=%r", user_id, customer_message)
@@ -348,6 +336,11 @@ Answer only the customer's new message. Do not repeat any headings or labels fro
 
             if response and response.text:
                 answer = response.text.strip()
+
+                if answer == NO_REPLY_TOKEN or NO_REPLY_TOKEN in answer:
+                    logger.info("GEMINI PASSIVE | user_id=%s", user_id)
+                    return None
+
                 if answer and not suspicious_ai_output(answer):
                     logger.info("GEMINI SUCCESS | user_id=%s | reply=%r", user_id, answer)
                     return answer
@@ -359,7 +352,7 @@ Answer only the customer's new message. Do not repeat any headings or labels fro
         except Exception as error:
             logger.exception("GEMINI ERROR | user_id=%s | error=%s", user_id, error)
 
-    return "ትንሽ ግልጽ አድርገው ይላኩልኝ፤ ምን ማለትዎ ነው?"
+    return None
 
 
 @telegram.on(events.NewMessage(pattern=r"^/version$"))
@@ -403,9 +396,7 @@ async def set_inventory_handler(event):
         await save_inventory_persistently()
     except Exception as error:
         logger.exception("INVENTORY PERSISTENCE FAILED | %s", error)
-        await event.reply(
-            "⚠️ የዕቃ መረጃው ተቀይሯል፣ ግን persistent copy ማስቀመጥ አልተቻለም።"
-        )
+        await event.reply("⚠️ የዕቃ መረጃው ተቀይሯል፣ ግን persistent copy ማስቀመጥ አልተቻለም።")
 
     logger.info("INVENTORY UPDATED | inventory=%r", daily_inventory)
     logger.info("AVAILABLE BOOK ENTRIES | %r", available_book_entries())
@@ -420,15 +411,11 @@ async def add_design_handler(event):
 
     tag = event.pattern_match.group(1)
     if not tag:
-        await event.reply(
-            "ፎቶውን attach አድርገው caption ላይ `/add_design leather_bible` ይጻፉ።"
-        )
+        await event.reply("ፎቶውን attach አድርገው caption ላይ `/add_design leather_bible` ይጻፉ።")
         return
 
     if not event.message.media:
-        await event.reply(
-            "ይህ command ከPNG/JPG ፎቶ ጋር መላክ አለበት።"
-        )
+        await event.reply("ይህ command ከPNG/JPG ፎቶ ጋር መላክ አለበት።")
         return
 
     tag = tag.lower()
@@ -466,7 +453,7 @@ async def customer_message_handler(event):
             return
 
         if not customer_text:
-            await event.reply("እባክዎን የሚፈልጉትን በጽሑፍ ይላኩልኝ።")
+            logger.info("PASSIVE NON-TEXT | sender_id=%s", event.sender_id)
             return
 
         first_name = getattr(sender, "first_name", None) or "ደንበኛ"
@@ -480,7 +467,7 @@ async def customer_message_handler(event):
             customer_text,
         )
 
-        remember_turn(event.sender_id, "customer", customer_text)
+        reply_text = None
 
         async with telegram.action(event.chat_id, "typing"):
             if is_greeting(customer_text):
@@ -515,7 +502,13 @@ async def customer_message_handler(event):
                     first_name=first_name,
                 )
 
+        if reply_text is None:
+            logger.info("PASSIVE NO REPLY | sender_id=%s | text=%r", event.sender_id, customer_text)
+            return
+
+        remember_turn(event.sender_id, "customer", customer_text)
         remember_turn(event.sender_id, "kavod", reply_text)
+
         await event.reply(reply_text, link_preview=False)
         logger.info("REPLY SENT | sender_id=%s | text=%r", event.sender_id, reply_text)
 
@@ -524,10 +517,7 @@ async def customer_message_handler(event):
         await asyncio.sleep(error.seconds)
     except Exception as error:
         logger.exception("CUSTOMER HANDLER ERROR | error=%s", error)
-        try:
-            await event.reply("ይቅርታ፣ ትንሽ የቴክኒክ ችግር አጋጥሞናል። እባክዎን እንደገና ይላኩልኝ።")
-        except Exception:
-            pass
+        return
 
 
 async def start_telegram():
@@ -538,7 +528,6 @@ async def start_telegram():
         raise RuntimeError("SESSION_STRING is invalid or no longer authorized.")
 
     me = await telegram.get_me()
-
     await load_persisted_inventory()
 
     logger.info("=" * 60)
